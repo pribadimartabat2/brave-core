@@ -66,11 +66,31 @@ void TestRejectsMalformedExistingKeyWithoutReplacingIt() {
   std::filesystem::remove_all(dir);
 }
 
+void TestMissingInitializedKeyFailsClosedInsteadOfRegenerating() {
+  const auto dir = MakeTempDir();
+  const auto path = dir / L"Portable Encryption Key";
+  const auto state_path = std::filesystem::path(path.wstring() + L".state");
+
+  const auto first = brave::os_crypt::LoadOrCreatePortableKey(path.wstring());
+  assert(first.has_value());
+  assert(std::filesystem::exists(state_path));
+
+  std::filesystem::remove(path);
+  assert(!std::filesystem::exists(path));
+
+  const auto missing = brave::os_crypt::LoadOrCreatePortableKey(path.wstring());
+  assert(!missing.has_value());
+  assert(!std::filesystem::exists(path));
+
+  std::filesystem::remove_all(dir);
+}
+
 }  // namespace
 
 int main() {
   TestCreatesAndReusesSamePortableKey();
   TestRejectsMalformedExistingKeyWithoutReplacingIt();
+  TestMissingInitializedKeyFailsClosedInsteadOfRegenerating();
   std::cout << "portable_key_file_win_test: PASS\n";
   return 0;
 }
