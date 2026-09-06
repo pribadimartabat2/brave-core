@@ -35,17 +35,25 @@ jobs:
           path: src/brave
           fetch-depth: 1
 
+      - name: Setup Brave-required Node 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.16.0'
+
       - name: Prepare exact pnpm without Corepack project-range parsing
         shell: pwsh
         run: |
+          $nodeVersion = (node --version).Trim()
+          if ($nodeVersion -ne 'v24.16.0') {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: expected Node v24.16.0, found $nodeVersion."
+          }
           corepack disable
           npm install --global pnpm@11.11.0 --force
           $pnpmVersion = (pnpm --version).Trim()
           if ($pnpmVersion -ne '11.11.0') {
             throw "PAMUNGKAS TARGETED COMPILE NO-GO: expected pnpm 11.11.0, found $pnpmVersion."
           }
-          Write-Host "pnpm $pnpmVersion"
-          node --version
+          Write-Host "Node $nodeVersion / pnpm $pnpmVersion"
 
       - name: Hosted-runner disk gate
         shell: pwsh
