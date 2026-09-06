@@ -10,6 +10,7 @@ on:
       - 'browser/os_crypt/**'
       - 'chromium_src/chrome/browser/browser_process_impl.cc'
       - 'patches/chrome-browser-browser_process_impl.cc.patch'
+      - 'tools/pamungkas/windows-build.ps1'
       - '.github/workflows/pamungkas-portable-oscrypt.yml'
 
 permissions:
@@ -27,8 +28,24 @@ jobs:
             browser/os_crypt
             chromium_src/chrome/browser/browser_process_impl.cc
             patches/chrome-browser-browser_process_impl.cc.patch
+            tools/pamungkas/windows-build.ps1
             package.json
           sparse-checkout-cone-mode: false
+
+      - name: Parse governed Windows build harness
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/pamungkas/windows-build.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw 'windows-build.ps1 contains PowerShell parser errors'
+          }
 
       - name: Compile portable key contract test
         shell: pwsh
