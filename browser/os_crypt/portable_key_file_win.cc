@@ -13,6 +13,7 @@ namespace brave::os_crypt {
 namespace {
 
 constexpr std::array<std::uint8_t, 4> kPortableKeyMagic = {'P', 'B', 'K', '1'};
+constexpr std::array<std::uint8_t, 4> kPortableStateMagic = {'P', 'B', 'S', '1'};
 
 class ScopedHandle {
  public:
@@ -48,6 +49,71 @@ class ScopedMemoryWipe {
   void* data_;
   std::size_t size_;
 };
+
+std::wstring PortableStatePath(const std::wstring& path) {
+  return path + L".state";
+}
+
+bool ReadPortableState(const std::wstring& path) {
+  ScopedHandle file(::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                                  nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                                  nullptr));
+  if (file.get() == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+
+  LARGE_INTEGER size = {};
+  if (!::GetFileSizeEx(file.get(), &size) ||
+      size.QuadPart != static_cast<LONGLONG>(kPortableStateMagic.size())) {
+    return false;
+  }
+
+  std::array<std::uint8_t, kPortableStateMagic.size()> bytes = {};
+  DWORD bytes_read = 0;
+  if (!::ReadFile(file.get(), bytes.data(), static_cast<DWORD>(bytes.size()),
+                  &bytes_read, nullptr) ||
+      bytes_read != static_cast<DWORD>(bytes.size())) {
+    return false;
+  }
+
+  return bytes == kPortableStateMagic;
+}
+
+bool EnsurePortableState(const std::wstring& path) {
+  if (ReadPortableState(path)) {
+    return true;
+  }
+
+  const DWORD attributes = ::GetFileAttributesW(path.c_str());
+  if (attributes != INVALID_FILE_ATTRIBUTES) {
+    // A state file exists but is malformed. Never replace it automatically.
+    return false;
+  }
+
+  const DWORD attributes_error = ::GetLastError();
+  if (attributes_error != ERROR_FILE_NOT_FOUND &&
+      attributes_error != ERROR_PATH_NOT_FOUND) {
+    return false;
+  }
+
+  ScopedHandle file(::CreateFileW(
+      path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
+      FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, nullptr));
+  if (file.get() == INVALID_HANDLE_VALUE) {
+    const DWORD error = ::GetLastError();
+    if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) {
+      return ReadPortableState(path);
+    }
+    return false;
+  }
+
+  DWORD bytes_written = 0;
+  return ::WriteFile(file.get(), kPortableStateMagic.data(),
+                     static_cast<DWORD>(kPortableStateMagic.size()),
+                     &bytes_written, nullptr) &&
+         bytes_written == static_cast<DWORD>(kPortableStateMagic.size()) &&
+         ::FlushFileBuffers(file.get());
+}
 
 std::optional<PortableKey> ReadPortableKey(const std::wstring& path) {
   ScopedHandle file(::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
@@ -132,13 +198,22 @@ std::optional<PortableKey> CreatePortableKey(const std::wstring& path) {
 }  // namespace
 
 std::optional<PortableKey> LoadOrCreatePortableKey(const std::wstring& path) {
+  const std::wstring state_path = PortableStatePath(path);
+
   if (auto key = ReadPortableKey(path); key.has_value()) {
+    // Backfill the state marker for an older POC key, but never accept a
+    // malformed marker. Once present, this marker lets us distinguish a fresh
+    // profile from accidental key loss.
+    if (!EnsurePortableState(state_path)) {
+      ::SecureZeroMemory(key->data(), key->size());
+      return std::nullopt;
+    }
     return key;
   }
 
   const DWORD attributes = ::GetFileAttributesW(path.c_str());
   if (attributes != INVALID_FILE_ATTRIBUTES) {
-    // A file exists but did not validate. Do not replace it automatically.
+    // A key file exists but did not validate. Do not replace it automatically.
     return std::nullopt;
   }
 
@@ -147,7 +222,30 @@ std::optional<PortableKey> LoadOrCreatePortableKey(const std::wstring& path) {
     return std::nullopt;
   }
 
-  return CreatePortableKey(path);
+  const DWORD state_attributes = ::GetFileAttributesW(state_path.c_str());
+  if (state_attributes != INVALID_FILE_ATTRIBUTES) {
+    // This profile was already initialized for portable encryption. A missing
+    // key must never be replaced with a new key because existing brp1 data
+    // would become silently undecryptable.
+    return std::nullopt;
+  }
+
+  const DWORD state_error = ::GetLastError();
+  if (state_error != ERROR_FILE_NOT_FOUND && state_error != ERROR_PATH_NOT_FOUND) {
+    return std::nullopt;
+  }
+
+  auto key = CreatePortableKey(path);
+  if (!key.has_value()) {
+    return std::nullopt;
+  }
+
+  if (!EnsurePortableState(state_path)) {
+    ::SecureZeroMemory(key->data(), key->size());
+    return std::nullopt;
+  }
+
+  return key;
 }
 
 }  // namespace brave::os_crypt
