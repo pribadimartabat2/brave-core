@@ -13,11 +13,7 @@ namespace brave::os_crypt {
 namespace {
 
 constexpr std::array<std::uint8_t, 4> kPortableKeyMagic = {'P', 'B', 'K', '1'};
-constexpr std::array<std::uint8_t, 4> kPortableStateMagicV1 = {'P', 'B', 'S', '1'};
-constexpr std::array<std::uint8_t, 4> kPortableStateMagicV2 = {'P', 'B', 'S', '2'};
-constexpr std::size_t kPortableStateFileSize = 12;
-constexpr std::uint64_t kFnv1aOffsetBasis = 14695981039346656037ull;
-constexpr std::uint64_t kFnv1aPrime = 1099511628211ull;
+constexpr std::array<std::uint8_t, 4> kPortableStateMagic = {'P', 'B', 'S', '1'};
 
 class ScopedHandle {
  public:
@@ -54,128 +50,69 @@ class ScopedMemoryWipe {
   std::size_t size_;
 };
 
-enum class PortableStateStatus {
-  kMissing,
-  kValid,
-  kLegacy,
-  kInvalid,
-};
-
 std::wstring PortableStatePath(const std::wstring& path) {
   return path + L".state";
 }
 
-std::uint64_t PortableKeyFingerprint(const PortableKey& key) {
-  std::uint64_t hash = kFnv1aOffsetBasis;
-  for (const std::uint8_t byte : key) {
-    hash ^= byte;
-    hash *= kFnv1aPrime;
-  }
-  return hash;
-}
-
-std::array<std::uint8_t, kPortableStateFileSize> PortableStateBytes(
-    const PortableKey& key) {
-  std::array<std::uint8_t, kPortableStateFileSize> bytes = {};
-  std::copy(kPortableStateMagicV2.begin(), kPortableStateMagicV2.end(),
-            bytes.begin());
-
-  const std::uint64_t fingerprint = PortableKeyFingerprint(key);
-  for (std::size_t i = 0; i < sizeof(fingerprint); ++i) {
-    bytes[kPortableStateMagicV2.size() + i] =
-        static_cast<std::uint8_t>((fingerprint >> (i * 8)) & 0xffu);
-  }
-  return bytes;
-}
-
-PortableStateStatus ReadPortableState(const std::wstring& path,
-                                      const PortableKey& key) {
+bool ReadPortableState(const std::wstring& path) {
   ScopedHandle file(::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                                   nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
                                   nullptr));
   if (file.get() == INVALID_HANDLE_VALUE) {
-    const DWORD error = ::GetLastError();
-    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
-      return PortableStateStatus::kMissing;
-    }
-    return PortableStateStatus::kInvalid;
+    return false;
   }
 
   LARGE_INTEGER size = {};
-  if (!::GetFileSizeEx(file.get(), &size)) {
-    return PortableStateStatus::kInvalid;
+  if (!::GetFileSizeEx(file.get(), &size) ||
+      size.QuadPart != static_cast<LONGLONG>(kPortableStateMagic.size())) {
+    return false;
   }
 
-  if (size.QuadPart == static_cast<LONGLONG>(kPortableStateMagicV1.size())) {
-    std::array<std::uint8_t, kPortableStateMagicV1.size()> legacy = {};
-    DWORD bytes_read = 0;
-    if (!::ReadFile(file.get(), legacy.data(),
-                    static_cast<DWORD>(legacy.size()), &bytes_read, nullptr) ||
-        bytes_read != static_cast<DWORD>(legacy.size())) {
-      return PortableStateStatus::kInvalid;
-    }
-    return legacy == kPortableStateMagicV1 ? PortableStateStatus::kLegacy
-                                           : PortableStateStatus::kInvalid;
-  }
-
-  if (size.QuadPart != static_cast<LONGLONG>(kPortableStateFileSize)) {
-    return PortableStateStatus::kInvalid;
-  }
-
-  std::array<std::uint8_t, kPortableStateFileSize> bytes = {};
+  std::array<std::uint8_t, kPortableStateMagic.size()> bytes = {};
   DWORD bytes_read = 0;
   if (!::ReadFile(file.get(), bytes.data(), static_cast<DWORD>(bytes.size()),
                   &bytes_read, nullptr) ||
       bytes_read != static_cast<DWORD>(bytes.size())) {
-    return PortableStateStatus::kInvalid;
+    return false;
   }
 
-  if (!std::equal(kPortableStateMagicV2.begin(), kPortableStateMagicV2.end(),
-                  bytes.begin())) {
-    return PortableStateStatus::kInvalid;
-  }
-
-  return bytes == PortableStateBytes(key) ? PortableStateStatus::kValid
-                                          : PortableStateStatus::kInvalid;
+  return bytes == kPortableStateMagic;
 }
 
-bool WritePortableState(const std::wstring& path,
-                        const PortableKey& key,
-                        DWORD creation_disposition) {
+bool EnsurePortableState(const std::wstring& path) {
+  if (ReadPortableState(path)) {
+    return true;
+  }
+
+  const DWORD attributes = ::GetFileAttributesW(path.c_str());
+  if (attributes != INVALID_FILE_ATTRIBUTES) {
+    // A state file exists but is malformed. Never replace it automatically.
+    return false;
+  }
+
+  const DWORD attributes_error = ::GetLastError();
+  if (attributes_error != ERROR_FILE_NOT_FOUND &&
+      attributes_error != ERROR_PATH_NOT_FOUND) {
+    return false;
+  }
+
   ScopedHandle file(::CreateFileW(
-      path.c_str(), GENERIC_WRITE, 0, nullptr, creation_disposition,
+      path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
       FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, nullptr));
   if (file.get() == INVALID_HANDLE_VALUE) {
+    const DWORD error = ::GetLastError();
+    if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) {
+      return ReadPortableState(path);
+    }
     return false;
   }
 
-  const auto bytes = PortableStateBytes(key);
   DWORD bytes_written = 0;
-  return ::WriteFile(file.get(), bytes.data(), static_cast<DWORD>(bytes.size()),
+  return ::WriteFile(file.get(), kPortableStateMagic.data(),
+                     static_cast<DWORD>(kPortableStateMagic.size()),
                      &bytes_written, nullptr) &&
-         bytes_written == static_cast<DWORD>(bytes.size()) &&
+         bytes_written == static_cast<DWORD>(kPortableStateMagic.size()) &&
          ::FlushFileBuffers(file.get());
-}
-
-bool EnsurePortableState(const std::wstring& path, const PortableKey& key) {
-  const PortableStateStatus status = ReadPortableState(path, key);
-  if (status == PortableStateStatus::kValid) {
-    return true;
-  }
-  if (status == PortableStateStatus::kInvalid) {
-    return false;
-  }
-  if (status == PortableStateStatus::kLegacy) {
-    // Upgrade the earlier presence-only marker while the valid key is present.
-    return WritePortableState(path, key, CREATE_ALWAYS);
-  }
-
-  if (WritePortableState(path, key, CREATE_NEW)) {
-    return true;
-  }
-
-  // Another process may have won the CREATE_NEW race.
-  return ReadPortableState(path, key) == PortableStateStatus::kValid;
 }
 
 std::optional<PortableKey> ReadPortableKey(const std::wstring& path) {
@@ -264,10 +201,10 @@ std::optional<PortableKey> LoadOrCreatePortableKey(const std::wstring& path) {
   const std::wstring state_path = PortableStatePath(path);
 
   if (auto key = ReadPortableKey(path); key.has_value()) {
-    // The state file binds initialization to this specific key fingerprint.
-    // A legacy presence-only marker is upgraded only while the valid key is
-    // available; a mismatching fingerprint fails closed.
-    if (!EnsurePortableState(state_path, *key)) {
+    // Backfill the state marker for an older POC key, but never accept a
+    // malformed marker. Once present, this marker lets us distinguish a fresh
+    // profile from accidental key loss.
+    if (!EnsurePortableState(state_path)) {
       ::SecureZeroMemory(key->data(), key->size());
       return std::nullopt;
     }
@@ -303,7 +240,7 @@ std::optional<PortableKey> LoadOrCreatePortableKey(const std::wstring& path) {
     return std::nullopt;
   }
 
-  if (!EnsurePortableState(state_path, *key)) {
+  if (!EnsurePortableState(state_path)) {
     ::SecureZeroMemory(key->data(), key->size());
     return std::nullopt;
   }
