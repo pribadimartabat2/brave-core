@@ -76,10 +76,15 @@ jobs:
             throw "PAMUNGKAS TARGETED COMPILE NO-GO: hosted runner has only $freeGB GB free; minimum is 55 GB."
           }
 
-      - name: Initialize pinned Chromium workspace
+      - name: Install Brave node dependencies
         shell: pwsh
         working-directory: src/brave
-        run: pnpm run init
+        run: pnpm install --frozen-lockfile
+
+      - name: Initialize pinned Chromium workspace shallow Windows x64
+        shell: pwsh
+        working-directory: src/brave
+        run: node ./build/commands/scripts/sync.ts --init --no-history --target_os win --target_arch x64
 
       - name: Compile portable OSCrypt provider target
         shell: pwsh
@@ -97,6 +102,9 @@ jobs:
             target = 'brave/browser/os_crypt:portable_key_provider'
             branch = 'pamungkas/portable-oscrypt-poc'
             commit = '${{ github.sha }}'
+            sync_history = 'shallow'
+            target_os = 'win'
+            target_arch = 'x64'
           }
           $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceDir 'targeted-compile-result.json') -Encoding UTF8
 
