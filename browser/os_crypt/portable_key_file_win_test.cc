@@ -31,9 +31,21 @@ std::vector<unsigned char> ReadAll(const std::filesystem::path& path) {
 
 void WriteAll(const std::filesystem::path& path,
               const std::vector<unsigned char>& bytes) {
-  std::ofstream output(path, std::ios::binary | std::ios::trunc);
-  output.write(reinterpret_cast<const char*>(bytes.data()),
-               static_cast<std::streamsize>(bytes.size()));
+  HANDLE file = ::CreateFileW(
+      path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+      FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, nullptr);
+  assert(file != INVALID_HANDLE_VALUE);
+
+  DWORD bytes_written = 0;
+  const BOOL wrote = ::WriteFile(file, bytes.data(),
+                                 static_cast<DWORD>(bytes.size()),
+                                 &bytes_written, nullptr);
+  const BOOL flushed = wrote ? ::FlushFileBuffers(file) : FALSE;
+  ::CloseHandle(file);
+
+  assert(wrote != FALSE);
+  assert(bytes_written == static_cast<DWORD>(bytes.size()));
+  assert(flushed != FALSE);
 }
 
 void TestCreatesAndReusesSamePortableKey() {
@@ -99,6 +111,7 @@ void TestRejectsSameSizeKeyMutationAfterInitialization() {
   assert(bytes.size() == brave::os_crypt::kPortableKeyFileSize);
   bytes.back() ^= 0x01;
   WriteAll(path, bytes);
+  assert(ReadAll(path) == bytes);
 
   const auto changed = brave::os_crypt::LoadOrCreatePortableKey(path.wstring());
   assert(!changed.has_value());
