@@ -35,12 +35,17 @@ jobs:
           path: src/brave
           fetch-depth: 1
 
-      - name: Prepare pnpm
+      - name: Prepare exact pnpm without Corepack project-range parsing
         shell: pwsh
         run: |
-          corepack enable
-          corepack prepare pnpm@11.11.0 --activate
-          pnpm --version
+          corepack disable
+          npm install --global pnpm@11.11.0 --force
+          $pnpmVersion = (pnpm --version).Trim()
+          if ($pnpmVersion -ne '11.11.0') {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: expected pnpm 11.11.0, found $pnpmVersion."
+          }
+          Write-Host "pnpm $pnpmVersion"
+          node --version
 
       - name: Hosted-runner disk gate
         shell: pwsh
