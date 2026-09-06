@@ -17,7 +17,8 @@ Do not merge into `master` until the full Windows build and the real PC A -> PC 
 
 Baseline Brave Core: `1.97.8`.
 Pinned Chromium: `153.0.8010.28`.
-Latest targeted core CI after build/dist contract changes: PASS.
+Latest lightweight portable-key/provider contract CI: PASS.
+Hosted targeted Windows compile gate is now active but has not yet produced a compile PASS.
 
 Status: `NO-GO` for release.
 
@@ -68,6 +69,18 @@ Provider precedence:
 
 Chromium `153.0.8010.28` confirms the legacy provider classes remain subclassable and expose the virtual `UseForEncryption()` behavior used by the wrappers.
 
+### Fail-closed encryption semantics
+
+Exact Chromium `153.0.8010.28` OSCryptAsync behavior was re-audited:
+
+- providers are evaluated by precedence and only a provider that successfully returns a key and whose `UseForEncryption()` is true becomes the default encryption provider;
+- a `kTemporarilyUnavailable` portable key is retained as an unavailable key-ring entry for possible recovery/decryption semantics, but is not selected for new encryption;
+- in portable mode the DPAPI and App-Bound wrappers both report `UseForEncryption() == false`;
+- therefore a missing/corrupt portable key leaves no default encryption provider;
+- Chromium `Encryptor::EncryptString()` returns failure when no default provider/key is available instead of silently falling back to a lower machine-bound provider.
+
+This confirms the intended NO-GO/fail-closed behavior for missing portable-key material.
+
 ### Chromium integration
 
 A minimal patch inserts `BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER` after App-Bound. Brave keeps implementation in `chromium_src/chrome/browser/browser_process_impl.cc`; no copy of Chromium's full `BrowserProcessImpl::PreMainMessageLoopRun()` is maintained.
@@ -105,6 +118,27 @@ Evidence under `<project>/.pamungkas/evidence/`:
 
 `windows-dist-result.json` records installer/distribution paths, byte sizes, and SHA-256 hashes. Dist PASS is impossible unless installer + ZIP outputs actually exist.
 
+## HOSTED TARGETED WINDOWS COMPILE
+
+`.github/workflows/pamungkas-targeted-windows-compile.yml` is a compile gate only. It is not release evidence.
+
+Purpose:
+- exercise the real Brave/Chromium Windows GN/Ninja toolchain against `brave/browser/os_crypt:portable_key_provider` without building the whole browser;
+- expose actual C++/GN integration failures before consuming a full self-hosted build.
+
+Environment blockers already fixed:
+- Corepack rejected Brave's `devEngines.packageManager.version: ">=11.11.0"`; workflow now installs exact `pnpm 11.11.0` without Corepack project-range parsing;
+- hosted runner Node 22 was below Brave's required `>=24.16.0 <25`; workflow now pins Node `24.16.0` through pinned `actions/setup-node`.
+
+Optimization commit:
+- `b4cca1d24c6841faad6d342a66374525b6bb9a78` changes initialization to Brave's own `sync.ts` with `--init --no-history --target_os win --target_arch x64` after a frozen-lockfile install;
+- this preserves the official Brave sync/patch/hooks path while avoiding Chromium history that is unnecessary for a compile gate.
+
+Current targeted run after this optimization:
+- run `34017325645`;
+- status at latest checkpoint: in progress during checkout/initialization path;
+- no targeted C++ compile PASS has been claimed yet.
+
 ## FULL-BUILD WORKFLOW
 
 `.github/workflows/pamungkas-full-windows-build.yml` is manual-only (`workflow_dispatch`) and deliberately uses:
@@ -139,7 +173,7 @@ Corrected evidence:
 - expected failure observed at `!changed.has_value()`;
 - PBS2 fingerprint implementation restored and targeted CI PASS.
 
-Latest targeted workflow checks:
+Latest lightweight workflow checks:
 - portable helper C++ compile;
 - portable helper runtime contract;
 - PowerShell build harness parser;
@@ -183,6 +217,7 @@ Existing profile:
 
 ## KNOWN-ISSUES
 
+- Hosted targeted Windows compile has not yet reached/recorded a successful provider target compile.
 - Full Brave Windows Release compile has not yet been executed on a 120GB+ capable Windows build environment.
 - Candidate installer/dist artifacts therefore do not exist yet.
 - Real patched-browser runtime has not yet been tested.
@@ -195,25 +230,28 @@ Status: `NO-GO`.
 
 Required before merge/release:
 1. targeted CI PASS in both repos;
-2. full Windows `Release` build PASS;
-3. `create_dist` PASS with installer + ZIP SHA-256 evidence;
-4. Portapps packaging consumes governed patched installer, never stock Brave;
-5. fresh profile creates PBK1 + PBS2 and starts normally;
-6. launcher postflight PASS;
-7. Chrome Web Store extension non-regression PASS;
-8. controlled own-account sessions survive PC A -> PC B;
-9. return PC B -> PC A remains valid;
-10. existing-profile migration test on original decrypt-capable PC then PC B;
-11. corrupt/missing/replaced-key behavior remains non-destructive;
-12. no cookie/password/key/fingerprint contents appear in logs or diagnostics;
-13. final release artifacts/checksums only after all gates pass.
+2. hosted real C++ target compile PASS for `portable_key_provider`;
+3. full Windows `Release` build PASS;
+4. `create_dist` PASS with installer + ZIP SHA-256 evidence;
+5. Portapps packaging consumes governed patched installer, never stock Brave;
+6. fresh profile creates PBK1 + PBS2 and starts normally;
+7. launcher postflight PASS;
+8. Chrome Web Store extension non-regression PASS;
+9. controlled own-account sessions survive PC A -> PC B;
+10. return PC B -> PC A remains valid;
+11. existing-profile migration test on original decrypt-capable PC then PC B;
+12. corrupt/missing/replaced-key behavior remains non-destructive;
+13. no cookie/password/key/fingerprint contents appear in logs or diagnostics;
+14. final release artifacts/checksums only after all gates pass.
 
 ## WHAT-NEXT
 
-1. Attach a suitable Windows self-hosted/cloud build runner labeled `brave-build` with at least 120 GB free.
-2. Run `pamungkas-full-windows-build` with `initialize=true` for the first workspace initialization.
-3. Collect candidate installer/dist + SHA-256 evidence.
-4. Configure `brave-portable` to the candidate patched installer via the governed URL+SHA helper/gate.
-5. Build the first integrated portable candidate.
-6. Execute PC A -> PC B -> PC A runtime matrix.
-7. Only then prepare final release artifacts and move PRs out of draft.
+1. Let hosted targeted compile `34017325645` reach the actual `portable_key_provider` target.
+2. If compile fails, patch only the concrete C++/GN error and rerun until this gate is green.
+3. Attach a suitable Windows self-hosted/cloud build runner labeled `brave-build` with at least 120 GB free.
+4. Run `pamungkas-full-windows-build` with `initialize=true` for the first workspace initialization.
+5. Collect candidate installer/dist + SHA-256 evidence.
+6. Configure `brave-portable` to the candidate patched installer via the governed URL+SHA helper/gate.
+7. Build the first integrated portable candidate.
+8. Execute PC A -> PC B -> PC A runtime matrix.
+9. Only then prepare final release artifacts and move PRs out of draft.
