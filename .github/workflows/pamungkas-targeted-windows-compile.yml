@@ -89,6 +89,45 @@ jobs:
         working-directory: src/brave
         run: node ./build/commands/scripts/sync.ts --init --no-history --target_os win --target_arch x64
 
+      - name: Ensure Chromium-required Windows SDK 10.0.28000.0
+        shell: pwsh
+        run: |
+          $sdkVersion = '10.0.28000.0'
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+          $requiredPaths = @(
+            (Join-Path $sdkRoot "Include\$sdkVersion\um"),
+            (Join-Path $sdkRoot "Include\$sdkVersion\shared"),
+            (Join-Path $sdkRoot "Include\$sdkVersion\ucrt"),
+            (Join-Path $sdkRoot "Lib\$sdkVersion\um\x64"),
+            (Join-Path $sdkRoot "Lib\$sdkVersion\ucrt\x64")
+          )
+          $missing = @($requiredPaths | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Container) })
+          if ($missing.Count -gt 0) {
+            Write-Host "Chromium 153 requires Windows SDK $sdkVersion; installing the missing desktop C++ SDK components."
+            $installer = Join-Path $env:RUNNER_TEMP 'winsdksetup-28000.exe'
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2372508' -OutFile $installer
+            $signature = Get-AuthenticodeSignature -FilePath $installer
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+              throw "PAMUNGKAS TARGETED COMPILE NO-GO: Windows SDK installer signature is not a valid Microsoft signature."
+            }
+            $arguments = @(
+              '/features',
+              'OptionId.DesktopCPPx64',
+              'OptionId.DesktopCPPx86',
+              '/quiet',
+              '/norestart'
+            )
+            $process = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
+            if ($process.ExitCode -notin @(0, 3010)) {
+              throw "PAMUNGKAS TARGETED COMPILE NO-GO: Windows SDK installer exited with code $($process.ExitCode)."
+            }
+          }
+          $missingAfter = @($requiredPaths | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Container) })
+          if ($missingAfter.Count -gt 0) {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: required Windows SDK $sdkVersion paths are still missing: $($missingAfter -join ', ')"
+          }
+          Write-Host "Windows SDK $sdkVersion compile prerequisites verified."
+
       - name: Compile portable OSCrypt provider target
         shell: pwsh
         working-directory: src/brave
@@ -128,6 +167,7 @@ jobs:
             sync_history = 'shallow'
             target_os = 'win'
             target_arch = 'x64'
+            windows_sdk = '10.0.28000.0'
           }
           $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceDir 'targeted-compile-result.json') -Encoding UTF8
 
