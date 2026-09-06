@@ -29,6 +29,13 @@ std::vector<unsigned char> ReadAll(const std::filesystem::path& path) {
                                     std::istreambuf_iterator<char>());
 }
 
+void WriteAll(const std::filesystem::path& path,
+              const std::vector<unsigned char>& bytes) {
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  output.write(reinterpret_cast<const char*>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+}
+
 void TestCreatesAndReusesSamePortableKey() {
   const auto dir = MakeTempDir();
   const auto path = dir / L"Portable Encryption Key";
@@ -53,11 +60,7 @@ void TestRejectsMalformedExistingKeyWithoutReplacingIt() {
   const auto path = dir / L"Portable Encryption Key";
 
   const std::vector<unsigned char> malformed = {'b', 'a', 'd'};
-  {
-    std::ofstream output(path, std::ios::binary);
-    output.write(reinterpret_cast<const char*>(malformed.data()),
-                 static_cast<std::streamsize>(malformed.size()));
-  }
+  WriteAll(path, malformed);
 
   const auto result = brave::os_crypt::LoadOrCreatePortableKey(path.wstring());
   assert(!result.has_value());
@@ -85,12 +88,31 @@ void TestMissingInitializedKeyFailsClosedInsteadOfRegenerating() {
   std::filesystem::remove_all(dir);
 }
 
+void TestRejectsSameSizeKeyMutationAfterInitialization() {
+  const auto dir = MakeTempDir();
+  const auto path = dir / L"Portable Encryption Key";
+
+  const auto first = brave::os_crypt::LoadOrCreatePortableKey(path.wstring());
+  assert(first.has_value());
+
+  auto bytes = ReadAll(path);
+  assert(bytes.size() == brave::os_crypt::kPortableKeyFileSize);
+  bytes.back() ^= 0x01;
+  WriteAll(path, bytes);
+
+  const auto changed = brave::os_crypt::LoadOrCreatePortableKey(path.wstring());
+  assert(!changed.has_value());
+
+  std::filesystem::remove_all(dir);
+}
+
 }  // namespace
 
 int main() {
   TestCreatesAndReusesSamePortableKey();
   TestRejectsMalformedExistingKeyWithoutReplacingIt();
   TestMissingInitializedKeyFailsClosedInsteadOfRegenerating();
+  TestRejectsSameSizeKeyMutationAfterInitialization();
   std::cout << "portable_key_file_win_test: PASS\n";
   return 0;
 }
