@@ -1,10 +1,16 @@
-# PAMUNGKAS Brave Portable — Windows Build Runner Contract
+# PAMUNGKAS Brave Portable — Windows Build Machine Contract
 
 Status: `BUILD-INFRASTRUCTURE / NO-GO UNTIL EVIDENCE`
 
 ## Purpose
 
 This machine exists only to compile the patched Brave Core branch and produce candidate build/dist evidence. It must not be used as proof that browser sessions are portable; that requires the separate PC A -> PC B -> PC A runtime matrix.
+
+## Current authority
+
+While `pamungkas/portable-oscrypt-poc` is not merged into the repository default branch, the canonical build path is **direct execution of the governed PowerShell harness on a disposable Windows build machine**.
+
+The branch also contains `.github/workflows/pamungkas-full-windows-build.yml`, but its `workflow_dispatch` trigger cannot be used until that workflow file exists on the default branch. Do not merge the PoC merely to enable that button.
 
 ## Required workspace
 
@@ -16,7 +22,7 @@ Canonical layout:
     brave\   <- pribadimartabat2/brave-core, branch pamungkas/portable-oscrypt-poc
 ```
 
-The governed entry point is:
+Governed entry point:
 
 ```powershell
 src\brave\tools\pamungkas\windows-build.ps1
@@ -39,9 +45,11 @@ Preferred build environment:
 1. disposable Windows VM / cloud build VM;
 2. dedicated only to this build;
 3. no unrelated credentials;
-4. destroyed or reset after candidate artifacts/evidence are copied out.
+4. clone only the governed branch;
+5. execute the harness directly rather than exposing a persistent runner service;
+6. destroy or reset the VM after candidate artifacts/evidence are copied out.
 
-If GitHub self-hosted Actions is used, use an ephemeral/dedicated machine with the custom `brave-build` label and remove the runner immediately after the job. The self-hosted workflow is manual-only and is not a release approval.
+A future GitHub self-hosted workflow may be used after the workflow exists on the default branch, but only with a disposable/dedicated runner. It is not required for this PoC and is not a release approval.
 
 ## Preflight only
 
