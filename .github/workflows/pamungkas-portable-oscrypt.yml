@@ -6,8 +6,10 @@ on:
       - 'pamungkas/portable-oscrypt-poc'
   pull_request:
     paths:
+      - 'browser/BUILD.gn'
       - 'browser/os_crypt/**'
       - 'chromium_src/chrome/browser/browser_process_impl.cc'
+      - 'patches/chrome-browser-browser_process_impl.cc.patch'
       - '.github/workflows/pamungkas-portable-oscrypt.yml'
 
 permissions:
@@ -21,8 +23,13 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           sparse-checkout: |
+            browser/BUILD.gn
             browser/os_crypt
+            chromium_src/chrome/browser/browser_process_impl.cc
+            patches/chrome-browser-browser_process_impl.cc.patch
+            package.json
           sparse-checkout-cone-mode: false
+
       - name: Compile portable key contract test
         shell: pwsh
         run: |
@@ -34,5 +41,49 @@ jobs:
             browser/os_crypt/portable_key_file_win_test.cc `
             -lbcrypt `
             -o portable_key_file_win_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Run portable key contract test
         run: .\portable_key_file_win_test.exe
+
+      - name: Verify Chromium hook patch against Brave pin
+        shell: pwsh
+        run: |
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $chromiumTag = $package.config.projects.chrome.tag
+          $upstream = Join-Path $PWD 'upstream'
+          $browserDir = Join-Path $upstream 'chrome\browser'
+          New-Item -ItemType Directory -Force -Path $browserDir | Out-Null
+          $source = Join-Path $browserDir 'browser_process_impl.cc'
+          $url = "https://raw.githubusercontent.com/chromium/chromium/$chromiumTag/chrome/browser/browser_process_impl.cc"
+          Invoke-WebRequest -Uri $url -OutFile $source
+          Push-Location $upstream
+          git init | Out-Null
+          git add chrome/browser/browser_process_impl.cc
+          git -c user.name=PAMUNGKAS -c user.email=pamungkas@example.invalid commit -m baseline | Out-Null
+          git apply --check ..\patches\chrome-browser-browser_process_impl.cc.patch
+          $exitCode = $LASTEXITCODE
+          Pop-Location
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Verify portable provider integration contract
+        shell: pwsh
+        run: |
+          $provider = Get-Content browser/os_crypt/brave_portable_key_provider_win.cc -Raw
+          $wrapper = Get-Content chromium_src/chrome/browser/browser_process_impl.cc -Raw
+          $patch = Get-Content patches/chrome-browser-browser_process_impl.cc.patch -Raw
+          $build = Get-Content browser/BUILD.gn -Raw
+
+          $checks = @(
+            @($provider -match 'kPortableDataPrefix\[\]\s*=\s*"brp1"', 'portable ciphertext tag brp1 missing'),
+            @($provider -match 'BravePortableAwareDPAPIKeyProvider::UseForEncryption', 'DPAPI decryption-only wrapper missing'),
+            @($provider -match 'BravePortableAwareAppBoundEncryptionProviderWin::UseForEncryption', 'App-Bound decryption-only wrapper missing'),
+            @($wrapper -match 'precedence=\*/20u', 'portable provider precedence 20 missing'),
+            @($wrapper -match 'BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER', 'chromium_src provider hook missing'),
+            @($patch -match 'BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER', 'upstream patch hook missing'),
+            @($build -match '//brave/browser/os_crypt:portable_key_provider', 'Brave core dependency missing')
+          )
+
+          foreach ($check in $checks) {
+            if (-not $check[0]) { throw $check[1] }
+          }
