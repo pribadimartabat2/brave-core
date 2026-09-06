@@ -9,6 +9,7 @@ Repositories:
 - Brave engine: `pribadimartabat2/brave-core`
 
 Working branch: `pamungkas/portable-oscrypt-poc`
+Draft PR: `pribadimartabat2/brave-core#1`
 
 Do not merge this branch into `master` until the Windows build and the real PC-A -> PC-B -> PC-A portability gate pass.
 
@@ -17,6 +18,15 @@ Do not merge this branch into `master` until the Windows build and the real PC-A
 Brave `master` at the start of this work reports Brave Core `1.97.8` and pins Chromium `153.0.8010.28`.
 
 Portapps already launches Brave with `--user-data-dir`, `--disable-machine-id`, and `--disable-encryption-win`. The profile directory is portable, but the old Windows OSCrypt implementation that made `--disable-encryption-win` effective was removed when Chromium/Brave migrated to OSCrypt Async. Current Windows OSCrypt Async uses DPAPI (`v10`, precedence 10) and App-Bound encryption (`v20`, precedence 15).
+
+Current PoC branch includes:
+- the portable provider implementation;
+- Chromium hook/build wiring;
+- targeted Windows helper CI;
+- fork-CI fix making Chromium mismatch label removal idempotent;
+- temporary raw-key buffer wiping hardening.
+
+Status remains `NO-GO`.
 
 ## ROOT CAUSE
 
@@ -31,14 +41,16 @@ The fix must not replace v10 or v20 outright: existing data may still need those
    - on-disk format: `PBK1` + 32 bytes;
    - `CREATE_NEW` prevents race overwrite;
    - malformed existing key is rejected, never silently replaced;
-   - file buffers are flushed before success.
+   - file buffers are flushed before success;
+   - temporary raw-key byte buffers are wiped with `SecureZeroMemory` on scope exit/error paths.
 
 2. `browser/os_crypt/brave_portable_key_provider_win.{h,cc}`
    - custom ciphertext prefix: `brp1`;
    - AES-256-GCM through OSCryptAsync `Encryptor::Key`;
    - active only when `--disable-encryption-win` is explicit;
    - key lives inside the explicit `--user-data-dir`;
-   - missing/corrupt key returns temporarily unavailable instead of regenerating over an existing file.
+   - missing/corrupt key returns temporarily unavailable instead of regenerating over an existing file;
+   - provider-local raw key is wiped after `Encryptor::Key` copies it.
 
 3. Legacy provider wrappers
    - DPAPI v10 remains available for decryption but is decryption-only in portable mode;
@@ -69,7 +81,22 @@ Targeted Windows helper contract covers:
 
 GitHub workflow also checks that the Chromium hook patch applies to the exact Chromium tag read from Brave `package.json`, and checks the static provider/wrapper/build contract.
 
-A successful targeted helper workflow is necessary but not sufficient for release. Full Brave Windows compile is still required after the provider integration.
+Last observed targeted workflow PASS: commit `da93b76c860748e6cc400eccc625c054f7b1fbca`.
+
+Later commits:
+- `1d8897a14fd7ae357113f3342082a3cdcabddcba` — fork workflow label-cleanup fix;
+- `b10ff90494a49c52382c7557fc89c8a5022e7406` — temporary raw-key memory wiping hardening.
+
+At the single post-push check, workflow runs for these later commits were not yet returned by the connector. Therefore they are **not** claimed PASS here.
+
+Upstream contract audit against Chromium `153.0.8010.28`:
+- `KeyProvider::UseForEncryption()` is virtual and matches the PoC override contract;
+- DPAPI/App-Bound provider signatures match the wrappers;
+- GN dependency labels used by the PoC exist at this Chromium pin;
+- OSCryptAsync accepts variable-length provider tags, so `brp1` does not depend on the 3-byte `v10`/`v20` length;
+- if `brp1` is temporarily unavailable, portable mode does not select DPAPI/App-Bound for new encryption, so encryption fails closed instead of falling back to a machine-bound provider.
+
+A successful targeted helper workflow and source-contract audit are necessary but not sufficient for release. Full Brave Windows compile is still required after the provider integration.
 
 ## SECURITY CONTRACT
 
@@ -87,12 +114,20 @@ Existing profile:
 - OSCryptAsync marks data decrypted by a non-current provider for re-encryption, but a complete store-wide migration must be proven for cookies/passwords before claiming existing-profile portability;
 - do not promise recovery of already machine-bound secrets after the original decryption context is unavailable.
 
+## KNOWN-ISSUES
+
+- Full Brave Windows compile has not yet been proven.
+- Real browser runtime has not yet been tested with this patched engine.
+- Real PC A -> PC B -> PC A session portability has not yet been proven.
+- `pribadimartabat2/brave-browser` wrapper/build repository is not currently present, and the available connector has no fork/create-repository action. A wrapper repo or equivalent build environment is needed for the next full Windows build gate.
+- Existing-profile store-wide migration remains unproven.
+
 ## RELEASE GATES
 
 Status: `NO-GO`.
 
 Required before merge/release:
-1. targeted workflow PASS;
+1. targeted workflow PASS on the current branch head;
 2. Brave Windows build PASS with Chromium `153.0.8010.28`;
 3. fresh profile creates `Portable Encryption Key` and browser starts normally;
 4. Chrome Web Store extension installs and remains enabled;
@@ -105,8 +140,8 @@ Required before merge/release:
 
 ## WHAT-NEXT
 
-1. Resolve any targeted workflow failure.
-2. Run a full Windows Brave compile with this branch.
+1. Obtain/build a Brave Windows wrapper environment that consumes `pribadimartabat2/brave-core@pamungkas/portable-oscrypt-poc`.
+2. Run a full Windows Brave compile with the PoC branch.
 3. Build a portable Brave package that consumes the patched binary rather than the stock Brave installer.
 4. Execute the real two-computer test matrix.
 5. Only after evidence passes, prepare release artifact/checksums and move the PR out of draft.
