@@ -1,0 +1,38 @@
+name: pamungkas-portable-oscrypt
+
+on:
+  push:
+    branches:
+      - 'pamungkas/portable-oscrypt-poc'
+  pull_request:
+    paths:
+      - 'browser/os_crypt/**'
+      - 'chromium_src/chrome/browser/browser_process_impl.cc'
+      - '.github/workflows/pamungkas-portable-oscrypt.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  portable-key-contract:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout focused files
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          sparse-checkout: |
+            browser/os_crypt
+          sparse-checkout-cone-mode: false
+      - name: Compile portable key contract test
+        shell: pwsh
+        run: |
+          $gpp = 'C:\mingw64\bin\g++.exe'
+          if (-not (Test-Path $gpp)) { throw "MinGW g++ not found at $gpp" }
+          & $gpp -std=c++20 -Wall -Wextra -Werror `
+            -I. `
+            browser/os_crypt/portable_key_file_win.cc `
+            browser/os_crypt/portable_key_file_win_test.cc `
+            -lbcrypt `
+            -o portable_key_file_win_test.exe
+      - name: Run portable key contract test
+        run: .\portable_key_file_win_test.exe
