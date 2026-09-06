@@ -74,16 +74,14 @@ jobs:
           $patch = Get-Content patches/chrome-browser-browser_process_impl.cc.patch -Raw
           $build = Get-Content browser/BUILD.gn -Raw
 
-          $checks = @(
-            @($provider -match 'kPortableDataPrefix\[\]\s*=\s*"brp1"', 'portable ciphertext tag brp1 missing'),
-            @($provider -match 'BravePortableAwareDPAPIKeyProvider::UseForEncryption', 'DPAPI decryption-only wrapper missing'),
-            @($provider -match 'BravePortableAwareAppBoundEncryptionProviderWin::UseForEncryption', 'App-Bound decryption-only wrapper missing'),
-            @($wrapper -match 'precedence=\*/20u', 'portable provider precedence 20 missing'),
-            @($wrapper -match 'BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER', 'chromium_src provider hook missing'),
-            @($patch -match 'BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER', 'upstream patch hook missing'),
-            @($build -match '//brave/browser/os_crypt:portable_key_provider', 'Brave core dependency missing')
-          )
-
-          foreach ($check in $checks) {
-            if (-not $check[0]) { throw $check[1] }
+          function Assert-Contains([string]$text, [string]$needle, [string]$message) {
+            if (-not $text.Contains($needle)) { throw $message }
           }
+
+          Assert-Contains $provider 'constexpr char kPortableDataPrefix[] = "brp1";' 'portable ciphertext tag brp1 missing'
+          Assert-Contains $provider 'BravePortableAwareDPAPIKeyProvider::UseForEncryption' 'DPAPI decryption-only wrapper missing'
+          Assert-Contains $provider 'BravePortableAwareAppBoundEncryptionProviderWin::UseForEncryption' 'App-Bound decryption-only wrapper missing'
+          Assert-Contains $wrapper '/*precedence=*/20u' 'portable provider precedence 20 missing'
+          Assert-Contains $wrapper 'BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER' 'chromium_src provider hook missing'
+          Assert-Contains $patch 'BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER' 'upstream patch hook missing'
+          Assert-Contains $build '//brave/browser/os_crypt:portable_key_provider' 'Brave core dependency missing'
