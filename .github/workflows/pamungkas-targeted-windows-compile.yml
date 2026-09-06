@@ -1,0 +1,90 @@
+name: pamungkas-targeted-windows-compile
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'pamungkas/portable-oscrypt-poc'
+    paths:
+      - 'browser/BUILD.gn'
+      - 'browser/os_crypt/**'
+      - 'chromium_src/chrome/browser/browser_process_impl.cc'
+      - 'patches/chrome-browser-browser_process_impl.cc.patch'
+      - '.github/workflows/pamungkas-targeted-windows-compile.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  targeted-compile:
+    runs-on: windows-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout Brave Core at canonical layout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: pamungkas/portable-oscrypt-poc
+          path: src/brave
+          fetch-depth: 1
+
+      - name: Prepare pnpm
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.11.0 --activate
+          pnpm --version
+
+      - name: Hosted-runner disk gate
+        shell: pwsh
+        run: |
+          $drive = (Get-Item $env:GITHUB_WORKSPACE).PSDrive
+          $freeGB = [math]::Round($drive.Free / 1GB, 1)
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE '.pamungkas\evidence'
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          $evidence = [ordered]@{
+            status = if ($freeGB -ge 55) { 'HOSTED_PREFLIGHT_PASS' } else { 'HOSTED_NO_GO_DISK' }
+            generated_at_utc = [DateTime]::UtcNow.ToString('o')
+            free_disk_gb = $freeGB
+            minimum_free_disk_gb = 55
+            target = 'brave/browser/os_crypt:portable_key_provider'
+            commit = '${{ github.sha }}'
+          }
+          $evidence | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceDir 'targeted-compile-preflight.json') -Encoding UTF8
+          Write-Host "Hosted runner free disk: $freeGB GB"
+          if ($freeGB -lt 55) {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: hosted runner has only $freeGB GB free; minimum is 55 GB."
+          }
+
+      - name: Initialize pinned Chromium workspace
+        shell: pwsh
+        working-directory: src/brave
+        run: pnpm run init
+
+      - name: Compile portable OSCrypt provider target
+        shell: pwsh
+        working-directory: src/brave
+        run: pnpm run build Release --target brave/browser/os_crypt:portable_key_provider
+
+      - name: Write compile evidence
+        if: success()
+        shell: pwsh
+        run: |
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE '.pamungkas\evidence'
+          $result = [ordered]@{
+            status = 'TARGETED_COMPILE_PASS'
+            generated_at_utc = [DateTime]::UtcNow.ToString('o')
+            target = 'brave/browser/os_crypt:portable_key_provider'
+            branch = 'pamungkas/portable-oscrypt-poc'
+            commit = '${{ github.sha }}'
+          }
+          $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceDir 'targeted-compile-result.json') -Encoding UTF8
+
+      - name: Upload targeted compile evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pamungkas-targeted-windows-compile-evidence
+          path: .pamungkas/evidence/*.json
+          if-no-files-found: warn
+          retention-days: 14
