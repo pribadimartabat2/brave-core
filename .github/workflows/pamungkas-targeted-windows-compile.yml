@@ -11,6 +11,13 @@ on:
       - 'chromium_src/chrome/browser/browser_process_impl.cc'
       - 'patches/chrome-browser-browser_process_impl.cc.patch'
       - '.github/workflows/pamungkas-targeted-windows-compile.yml'
+  pull_request:
+    paths:
+      - 'browser/BUILD.gn'
+      - 'browser/os_crypt/**'
+      - 'chromium_src/chrome/browser/browser_process_impl.cc'
+      - 'patches/chrome-browser-browser_process_impl.cc.patch'
+      - '.github/workflows/pamungkas-targeted-windows-compile.yml'
 
 permissions:
   contents: read
