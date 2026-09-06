@@ -7,7 +7,6 @@
 #include <array>
 #include <cstdint>
 #include <optional>
-#include <utility>
 
 namespace brave::os_crypt {
 namespace {
@@ -50,7 +49,7 @@ std::optional<PortableKey> ReadPortableKey(const std::wstring& path) {
   DWORD bytes_read = 0;
   if (!::ReadFile(file.get(), bytes.data(), static_cast<DWORD>(bytes.size()),
                   &bytes_read, nullptr) ||
-      bytes_read != bytes.size()) {
+      bytes_read != static_cast<DWORD>(bytes.size())) {
     return std::nullopt;
   }
 
@@ -98,14 +97,10 @@ std::optional<PortableKey> CreatePortableKey(const std::wstring& path) {
   DWORD bytes_written = 0;
   if (!::WriteFile(file.get(), bytes.data(), static_cast<DWORD>(bytes.size()),
                    &bytes_written, nullptr) ||
-      bytes_written != bytes.size() || !::FlushFileBuffers(file.get())) {
-    // Never leave a partial key file behind. The handle is intentionally closed
-    // before the delete by ending this scope via a local close below.
-    ::CloseHandle(file.get());
-    // Prevent the RAII wrapper from closing the same handle twice by relying on
-    // process-safe DeleteFile semantics only after an explicit close is not
-    // possible with the current wrapper. Return failure instead of risking a
-    // destructive overwrite on the next launch.
+      bytes_written != static_cast<DWORD>(bytes.size()) ||
+      !::FlushFileBuffers(file.get())) {
+    // Fail closed. A partial file, if any, is deliberately not overwritten on
+    // the next launch; LoadOrCreatePortableKey will reject it for recovery.
     return std::nullopt;
   }
 
@@ -125,8 +120,8 @@ std::optional<PortableKey> LoadOrCreatePortableKey(const std::wstring& path) {
     return std::nullopt;
   }
 
-  if (::GetLastError() != ERROR_FILE_NOT_FOUND &&
-      ::GetLastError() != ERROR_PATH_NOT_FOUND) {
+  const DWORD error = ::GetLastError();
+  if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
     return std::nullopt;
   }
 
