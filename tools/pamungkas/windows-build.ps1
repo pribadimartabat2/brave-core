@@ -2,6 +2,7 @@
 param(
     [switch]$Initialize,
     [switch]$CheckOnly,
+    [switch]$CreateDist,
     [ValidateSet('Component', 'Release', 'Static', 'Debug')]
     [string]$Configuration = 'Release',
     [ValidateRange(40, 2048)]
@@ -36,6 +37,10 @@ $expectedSuffix = [IO.Path]::Combine('src', 'brave')
 $normalized = $braveDir.TrimEnd('\', '/') -replace '/', '\'
 if (-not $normalized.EndsWith($expectedSuffix, [StringComparison]::OrdinalIgnoreCase)) {
     Fail "brave-core must be checked out at <project>\src\brave. Current path: $braveDir"
+}
+
+if ($CreateDist -and $Configuration -ne 'Release') {
+    Fail "CreateDist is only supported for the governed Release configuration."
 }
 
 $packageJson = Join-Path $braveDir 'package.json'
@@ -97,6 +102,7 @@ try {
         chromium_tag = $chromiumTag
         configuration = $Configuration
         initialize_requested = [bool]$Initialize
+        create_dist_requested = [bool]$CreateDist
         free_disk_gb = $freeGB
         minimum_free_disk_gb = $MinimumFreeGB
         tools = [ordered]@{
@@ -153,6 +159,61 @@ try {
     $successPath = Join-Path $evidenceDir 'windows-build-result.json'
     $success | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $successPath -Encoding UTF8
     Write-Host "PAMUNGKAS build PASS. Evidence: $successPath"
+
+    if ($CreateDist) {
+        Write-Host 'Creating unsigned governed Windows distribution with Brave create_dist...'
+        & pnpm run create_dist Release --skip_signing
+        if ($LASTEXITCODE -ne 0) {
+            Fail "Brave create_dist Release --skip_signing failed with exit code $LASTEXITCODE."
+        }
+
+        $releaseOut = Join-Path $projectRoot 'src\out\Release'
+        $installerPath = Join-Path $releaseOut 'brave_installer.exe'
+        if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+            Fail "create_dist completed but brave_installer.exe was not found at $installerPath."
+        }
+
+        $distDir = Join-Path $releaseOut 'dist'
+        $distZips = @()
+        if (Test-Path -LiteralPath $distDir -PathType Container) {
+            $distZips = @(Get-ChildItem -LiteralPath $distDir -Filter '*.zip' -File | Sort-Object Name)
+        }
+        if ($distZips.Count -eq 0) {
+            Fail "create_dist completed but no distribution ZIP was found under $distDir."
+        }
+
+        $installerInfo = Get-Item -LiteralPath $installerPath
+        $installerHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $zipEvidence = @()
+        foreach ($zip in $distZips) {
+            $zipEvidence += [ordered]@{
+                path = $zip.FullName
+                bytes = $zip.Length
+                sha256 = (Get-FileHash -LiteralPath $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        }
+
+        $distEvidence = [ordered]@{
+            status = 'DIST_PASS'
+            generated_at_utc = [DateTime]::UtcNow.ToString('o')
+            brave_core_branch = $branch
+            brave_core_commit = $commit
+            brave_core_version = $package.version
+            chromium_tag = $chromiumTag
+            configuration = $Configuration
+            signing = 'skipped-for-poc'
+            installer = [ordered]@{
+                path = $installerInfo.FullName
+                bytes = $installerInfo.Length
+                sha256 = $installerHash
+            }
+            distribution_zips = $zipEvidence
+        }
+        $distEvidencePath = Join-Path $evidenceDir 'windows-dist-result.json'
+        $distEvidence | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $distEvidencePath -Encoding UTF8
+        Write-Host "PAMUNGKAS dist PASS. Evidence: $distEvidencePath"
+        Write-Host "Patched installer SHA-256: $installerHash"
+    }
 } finally {
     Pop-Location
 }
