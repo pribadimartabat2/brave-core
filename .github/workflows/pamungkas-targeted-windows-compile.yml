@@ -67,7 +67,10 @@ jobs:
             generated_at_utc = [DateTime]::UtcNow.ToString('o')
             free_disk_gb = $freeGB
             minimum_free_disk_gb = 55
-            target = 'brave/browser/os_crypt:portable_key_provider'
+            targets = @(
+              'brave/browser/os_crypt:portable_key_provider',
+              'brave/browser:core'
+            )
             commit = '${{ github.sha }}'
           }
           $evidence | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceDir 'targeted-compile-preflight.json') -Encoding UTF8
@@ -91,15 +94,23 @@ jobs:
         working-directory: src/brave
         run: pnpm run build Release --target brave/browser/os_crypt:portable_key_provider
 
+      - name: Compile Brave browser core integration target
+        shell: pwsh
+        working-directory: src/brave
+        run: pnpm run build Release --target brave/browser:core
+
       - name: Write compile evidence
         if: success()
         shell: pwsh
         run: |
           $evidenceDir = Join-Path $env:GITHUB_WORKSPACE '.pamungkas\evidence'
           $result = [ordered]@{
-            status = 'TARGETED_COMPILE_PASS'
+            status = 'TARGETED_INTEGRATION_COMPILE_PASS'
             generated_at_utc = [DateTime]::UtcNow.ToString('o')
-            target = 'brave/browser/os_crypt:portable_key_provider'
+            targets = @(
+              'brave/browser/os_crypt:portable_key_provider',
+              'brave/browser:core'
+            )
             branch = 'pamungkas/portable-oscrypt-poc'
             commit = '${{ github.sha }}'
             sync_history = 'shallow'
