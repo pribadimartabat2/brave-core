@@ -12,6 +12,7 @@ on:
       - 'patches/chrome-browser-browser_process_impl.cc.patch'
       - 'tools/pamungkas/windows-build.ps1'
       - '.github/workflows/pamungkas-portable-oscrypt.yml'
+      - '.github/workflows/pamungkas-full-windows-build.yml'
 
 permissions:
   contents: read
@@ -29,6 +30,7 @@ jobs:
             chromium_src/chrome/browser/browser_process_impl.cc
             patches/chrome-browser-browser_process_impl.cc.patch
             tools/pamungkas/windows-build.ps1
+            .github/workflows/pamungkas-full-windows-build.yml
             package.json
           sparse-checkout-cone-mode: false
 
@@ -37,8 +39,9 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
+          $harnessPath = Resolve-Path 'tools/pamungkas/windows-build.ps1'
           [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path 'tools/pamungkas/windows-build.ps1'),
+            $harnessPath,
             [ref]$tokens,
             [ref]$errors
           ) | Out-Null
@@ -46,6 +49,27 @@ jobs:
             $errors | ForEach-Object { Write-Error $_.Message }
             throw 'windows-build.ps1 contains PowerShell parser errors'
           }
+
+          $harness = Get-Content $harnessPath -Raw
+          function Assert-Contains([string]$text, [string]$needle, [string]$message) {
+            if (-not $text.Contains($needle)) { throw $message }
+          }
+          Assert-Contains $harness '[switch]$CreateDist' 'CreateDist build gate missing'
+          Assert-Contains $harness 'pnpm run create_dist Release --skip_signing' 'unsigned Brave create_dist command missing'
+          Assert-Contains $harness 'windows-dist-result.json' 'distribution evidence file missing'
+          Assert-Contains $harness 'Get-FileHash -LiteralPath $installerPath -Algorithm SHA256' 'installer SHA-256 evidence missing'
+
+      - name: Verify full-build workflow contract
+        shell: pwsh
+        run: |
+          $workflow = Get-Content '.github/workflows/pamungkas-full-windows-build.yml' -Raw
+          function Assert-Contains([string]$text, [string]$needle, [string]$message) {
+            if (-not $text.Contains($needle)) { throw $message }
+          }
+          Assert-Contains $workflow 'runs-on: [self-hosted, Windows, X64, brave-build]' 'self-hosted full-build runner gate missing'
+          Assert-Contains $workflow "'-CreateDist'" 'full-build workflow does not request CreateDist'
+          Assert-Contains $workflow 'src/out/Release/brave_installer.exe' 'patched installer artifact upload missing'
+          Assert-Contains $workflow 'src/out/Release/dist/*.zip' 'patched distribution ZIP upload missing'
 
       - name: Compile portable key contract test
         shell: pwsh
