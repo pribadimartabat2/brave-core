@@ -92,12 +92,24 @@ jobs:
       - name: Compile portable OSCrypt provider target
         shell: pwsh
         working-directory: src/brave
-        run: pnpm run build Release --target brave/browser/os_crypt:portable_key_provider
+        run: |
+          $log = Join-Path $env:GITHUB_WORKSPACE '.pamungkas\evidence\provider-compile.log'
+          pnpm run build Release --target brave/browser/os_crypt:portable_key_provider 2>&1 | Tee-Object -FilePath $log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            throw "PAMUNGKAS provider compile failed with exit code $exitCode. See provider-compile.log."
+          }
 
       - name: Compile Brave browser core integration target
         shell: pwsh
         working-directory: src/brave
-        run: pnpm run build Release --target brave/browser:core
+        run: |
+          $log = Join-Path $env:GITHUB_WORKSPACE '.pamungkas\evidence\core-integration-compile.log'
+          pnpm run build Release --target brave/browser:core 2>&1 | Tee-Object -FilePath $log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            throw "PAMUNGKAS core integration compile failed with exit code $exitCode. See core-integration-compile.log."
+          }
 
       - name: Write compile evidence
         if: success()
@@ -124,6 +136,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pamungkas-targeted-windows-compile-evidence
-          path: .pamungkas/evidence/*.json
+          path: .pamungkas/evidence/*
           if-no-files-found: warn
           retention-days: 14
