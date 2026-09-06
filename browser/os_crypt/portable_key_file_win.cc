@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 
@@ -31,6 +32,23 @@ class ScopedHandle {
   HANDLE handle_;
 };
 
+class ScopedMemoryWipe {
+ public:
+  ScopedMemoryWipe(void* data, std::size_t size) : data_(data), size_(size) {}
+  ~ScopedMemoryWipe() {
+    if (data_ && size_ != 0) {
+      ::SecureZeroMemory(data_, size_);
+    }
+  }
+
+  ScopedMemoryWipe(const ScopedMemoryWipe&) = delete;
+  ScopedMemoryWipe& operator=(const ScopedMemoryWipe&) = delete;
+
+ private:
+  void* data_;
+  std::size_t size_;
+};
+
 std::optional<PortableKey> ReadPortableKey(const std::wstring& path) {
   ScopedHandle file(::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                                   nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
@@ -46,6 +64,7 @@ std::optional<PortableKey> ReadPortableKey(const std::wstring& path) {
   }
 
   std::array<std::uint8_t, kPortableKeyFileSize> bytes = {};
+  ScopedMemoryWipe wipe_bytes(bytes.data(), bytes.size());
   DWORD bytes_read = 0;
   if (!::ReadFile(file.get(), bytes.data(), static_cast<DWORD>(bytes.size()),
                   &bytes_read, nullptr) ||
@@ -83,6 +102,7 @@ std::optional<PortableKey> CreatePortableKey(const std::wstring& path) {
       FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, nullptr));
   if (file.get() == INVALID_HANDLE_VALUE) {
     const DWORD error = ::GetLastError();
+    ::SecureZeroMemory(key->data(), key->size());
     if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) {
       return ReadPortableKey(path);
     }
@@ -90,6 +110,7 @@ std::optional<PortableKey> CreatePortableKey(const std::wstring& path) {
   }
 
   std::array<std::uint8_t, kPortableKeyFileSize> bytes = {};
+  ScopedMemoryWipe wipe_bytes(bytes.data(), bytes.size());
   std::copy(kPortableKeyMagic.begin(), kPortableKeyMagic.end(), bytes.begin());
   std::copy(key->begin(), key->end(),
             bytes.begin() + kPortableKeyMagic.size());
@@ -101,6 +122,7 @@ std::optional<PortableKey> CreatePortableKey(const std::wstring& path) {
       !::FlushFileBuffers(file.get())) {
     // Fail closed. A partial file, if any, is deliberately not overwritten on
     // the next launch; LoadOrCreatePortableKey will reject it for recovery.
+    ::SecureZeroMemory(key->data(), key->size());
     return std::nullopt;
   }
 
