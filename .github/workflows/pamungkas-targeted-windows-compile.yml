@@ -67,6 +67,7 @@ jobs:
             generated_at_utc = [DateTime]::UtcNow.ToString('o')
             free_disk_gb = $freeGB
             minimum_free_disk_gb = 55
+            configuration = 'Component'
             targets = @(
               'brave/browser/os_crypt:portable_key_provider',
               'brave/browser:core'
@@ -133,7 +134,7 @@ jobs:
         working-directory: src/brave
         run: |
           $log = Join-Path $env:GITHUB_WORKSPACE '.pamungkas\evidence\provider-compile.log'
-          pnpm run build Release --target brave/browser/os_crypt:portable_key_provider 2>&1 | Tee-Object -FilePath $log
+          pnpm run build Component --target brave/browser/os_crypt:portable_key_provider 2>&1 | Tee-Object -FilePath $log
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) {
             throw "PAMUNGKAS provider compile failed with exit code $exitCode. See provider-compile.log."
@@ -144,7 +145,7 @@ jobs:
         working-directory: src/brave
         run: |
           $log = Join-Path $env:GITHUB_WORKSPACE '.pamungkas\evidence\core-integration-compile.log'
-          pnpm run build Release --target brave/browser:core 2>&1 | Tee-Object -FilePath $log
+          pnpm run build Component --target brave/browser:core 2>&1 | Tee-Object -FilePath $log
           $exitCode = $LASTEXITCODE
           if ($exitCode -ne 0) {
             throw "PAMUNGKAS core integration compile failed with exit code $exitCode. See core-integration-compile.log."
@@ -158,6 +159,7 @@ jobs:
           $result = [ordered]@{
             status = 'TARGETED_INTEGRATION_COMPILE_PASS'
             generated_at_utc = [DateTime]::UtcNow.ToString('o')
+            configuration = 'Component'
             targets = @(
               'brave/browser/os_crypt:portable_key_provider',
               'brave/browser:core'
