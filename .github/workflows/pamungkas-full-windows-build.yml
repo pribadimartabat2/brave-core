@@ -1,0 +1,72 @@
+name: pamungkas-full-windows-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      initialize:
+        description: 'Initialize/sync the Chromium workspace before building'
+        required: true
+        type: boolean
+        default: false
+      minimum_free_gb:
+        description: 'Minimum free disk required by the governed build harness'
+        required: true
+        type: number
+        default: 120
+
+permissions:
+  contents: read
+
+jobs:
+  release-build:
+    # Intentionally self-hosted: a normal GitHub-hosted Windows runner is not
+    # treated as evidence for this multi-hour, large Chromium build.
+    runs-on: [self-hosted, Windows, X64, brave-build]
+    timeout-minutes: 720
+
+    steps:
+      - name: Checkout Brave Core at canonical layout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: pamungkas/portable-oscrypt-poc
+          path: src/brave
+          fetch-depth: 0
+          clean: true
+
+      - name: Governed preflight
+        shell: pwsh
+        working-directory: src/brave
+        run: |
+          ./tools/pamungkas/windows-build.ps1 `
+            -CheckOnly `
+            -Configuration Release `
+            -MinimumFreeGB ${{ inputs.minimum_free_gb }}
+
+      - name: Upload preflight evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pamungkas-brave-windows-preflight
+          path: .pamungkas/evidence/windows-build-preflight.json
+          if-no-files-found: warn
+
+      - name: Full patched Brave Release build
+        shell: pwsh
+        working-directory: src/brave
+        run: |
+          $arguments = @(
+            '-Configuration', 'Release',
+            '-MinimumFreeGB', '${{ inputs.minimum_free_gb }}'
+          )
+          if ('${{ inputs.initialize }}' -eq 'true') {
+            $arguments += '-Initialize'
+          }
+          ./tools/pamungkas/windows-build.ps1 @arguments
+
+      - name: Upload build-pass evidence
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pamungkas-brave-windows-build-pass
+          path: .pamungkas/evidence/windows-build-result.json
+          if-no-files-found: error
