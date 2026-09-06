@@ -1,0 +1,27 @@
+# Copyright (c) 2026 The Brave Authors. All rights reserved.
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this file,
+# You can obtain one at https://mozilla.org/MPL/2.0/.
+
+assert(is_win)
+
+source_set("portable_key_provider") {
+  sources = [
+    "brave_portable_key_provider_win.cc",
+    "brave_portable_key_provider_win.h",
+    "portable_key_file_win.cc",
+    "portable_key_file_win.h",
+  ]
+
+  deps = [
+    "//base",
+    "//brave/components/constants",
+    "//chrome/browser/os_crypt:os_crypt",
+    "//chrome/common",
+    "//components/os_crypt/async/browser:dpapi_key_provider",
+    "//components/os_crypt/async/browser:key_provider_interface",
+    "//components/os_crypt/async/common",
+  ]
+
+  libs = [ "bcrypt.lib" ]
+}

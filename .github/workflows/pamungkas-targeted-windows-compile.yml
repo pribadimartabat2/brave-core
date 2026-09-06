@@ -1,0 +1,209 @@
+name: pamungkas-targeted-windows-compile
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'pamungkas/portable-oscrypt-poc'
+    paths:
+      - 'browser/BUILD.gn'
+      - 'browser/os_crypt/**'
+      - 'chromium_src/chrome/browser/browser_process_impl.cc'
+      - 'patches/chrome-browser-browser_process_impl.cc.patch'
+      - '.github/workflows/pamungkas-targeted-windows-compile.yml'
+  pull_request:
+    paths:
+      - 'browser/BUILD.gn'
+      - 'browser/os_crypt/**'
+      - 'chromium_src/chrome/browser/browser_process_impl.cc'
+      - 'patches/chrome-browser-browser_process_impl.cc.patch'
+      - '.github/workflows/pamungkas-targeted-windows-compile.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  targeted-compile:
+    runs-on: windows-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout Brave Core at canonical layout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: pamungkas/portable-oscrypt-poc
+          path: src/brave
+          fetch-depth: 1
+
+      - name: Setup Brave-required Node 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.16.0'
+
+      - name: Prepare exact pnpm without Corepack project-range parsing
+        shell: pwsh
+        run: |
+          $nodeVersion = (node --version).Trim()
+          if ($nodeVersion -ne 'v24.16.0') {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: expected Node v24.16.0, found $nodeVersion."
+          }
+          corepack disable
+          npm install --global pnpm@11.11.0 --force
+          $pnpmVersion = (pnpm --version).Trim()
+          if ($pnpmVersion -ne '11.11.0') {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: expected pnpm 11.11.0, found $pnpmVersion."
+          }
+          Write-Host "Node $nodeVersion / pnpm $pnpmVersion"
+
+      - name: Hosted-runner disk gate
+        shell: pwsh
+        run: |
+          $drive = (Get-Item $env:GITHUB_WORKSPACE).PSDrive
+          $freeGB = [math]::Round($drive.Free / 1GB, 1)
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE '.pamungkas\evidence'
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          $evidence = [ordered]@{
+            status = if ($freeGB -ge 55) { 'HOSTED_PREFLIGHT_PASS' } else { 'HOSTED_NO_GO_DISK' }
+            generated_at_utc = [DateTime]::UtcNow.ToString('o')
+            free_disk_gb = $freeGB
+            minimum_free_disk_gb = 55
+            configuration = 'Component'
+            targets = @(
+              'brave/browser/os_crypt:portable_key_provider',
+              'brave/browser:core'
+            )
+            commit = '${{ github.sha }}'
+          }
+          $evidence | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceDir 'targeted-compile-preflight.json') -Encoding UTF8
+          Write-Host "Hosted runner free disk: $freeGB GB"
+          if ($freeGB -lt 55) {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: hosted runner has only $freeGB GB free; minimum is 55 GB."
+          }
+
+      - name: Install Brave node dependencies
+        shell: pwsh
+        working-directory: src/brave
+        run: pnpm install --frozen-lockfile
+
+      - name: Initialize pinned Chromium workspace shallow Windows x64
+        shell: pwsh
+        working-directory: src/brave
+        run: node ./build/commands/scripts/sync.ts --init --no-history --target_os win --target_arch x64
+
+      - name: Deepen Chromium history for valid LASTCHANGE metadata
+        shell: pwsh
+        working-directory: src/brave
+        run: |
+          $chromiumRoot = (Resolve-Path '..').Path
+          $isShallow = (git -C $chromiumRoot rev-parse --is-shallow-repository).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: cannot inspect Chromium repository history."
+          }
+          if ($isShallow -eq 'true') {
+            git -C $chromiumRoot fetch --deepen=64 origin
+            if ($LASTEXITCODE -ne 0) {
+              throw "PAMUNGKAS TARGETED COMPILE NO-GO: failed to deepen Chromium history."
+            }
+          }
+          $positionCommit = @(git -C $chromiumRoot log -n 64 --format='%H' --grep='Cr-Commit-Position:') | Select-Object -First 1
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($positionCommit)) {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: Chromium history still lacks Cr-Commit-Position metadata required by LASTCHANGE."
+          }
+          $commitTimeText = (git -C $chromiumRoot show -s --format='%ct' $positionCommit).Trim()
+          $commitTime = 0L
+          if ($LASTEXITCODE -ne 0 -or -not [Int64]::TryParse($commitTimeText, [ref]$commitTime) -or $commitTime -le 0) {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: Chromium LASTCHANGE source commit has an invalid timestamp: $commitTimeText"
+          }
+          Write-Host "Chromium LASTCHANGE metadata gate PASS: commit=$positionCommit timestamp=$commitTime"
+
+      - name: Ensure Chromium-required Windows SDK 10.0.28000.0
+        shell: pwsh
+        run: |
+          $sdkVersion = '10.0.28000.0'
+          $sdkRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10'
+          $requiredPaths = @(
+            (Join-Path $sdkRoot "Include\$sdkVersion\um"),
+            (Join-Path $sdkRoot "Include\$sdkVersion\shared"),
+            (Join-Path $sdkRoot "Include\$sdkVersion\ucrt"),
+            (Join-Path $sdkRoot "Lib\$sdkVersion\um\x64"),
+            (Join-Path $sdkRoot "Lib\$sdkVersion\ucrt\x64")
+          )
+          $missing = @($requiredPaths | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Container) })
+          if ($missing.Count -gt 0) {
+            Write-Host "Chromium 153 requires Windows SDK $sdkVersion; installing the missing desktop C++ SDK components."
+            $installer = Join-Path $env:RUNNER_TEMP 'winsdksetup-28000.exe'
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2372508' -OutFile $installer
+            $signature = Get-AuthenticodeSignature -FilePath $installer
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') {
+              throw "PAMUNGKAS TARGETED COMPILE NO-GO: Windows SDK installer signature is not a valid Microsoft signature."
+            }
+            $arguments = @(
+              '/features',
+              'OptionId.DesktopCPPx64',
+              'OptionId.DesktopCPPx86',
+              '/quiet',
+              '/norestart'
+            )
+            $process = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
+            if ($process.ExitCode -notin @(0, 3010)) {
+              throw "PAMUNGKAS TARGETED COMPILE NO-GO: Windows SDK installer exited with code $($process.ExitCode)."
+            }
+          }
+          $missingAfter = @($requiredPaths | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Container) })
+          if ($missingAfter.Count -gt 0) {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: required Windows SDK $sdkVersion paths are still missing: $($missingAfter -join ', ')"
+          }
+          Write-Host "Windows SDK $sdkVersion compile prerequisites verified."
+
+      - name: Compile portable OSCrypt provider target
+        shell: pwsh
+        working-directory: src/brave
+        run: |
+          $log = Join-Path $env:GITHUB_WORKSPACE '.pamungkas\evidence\provider-compile.log'
+          pnpm run build Component --target brave/browser/os_crypt:portable_key_provider 2>&1 | Tee-Object -FilePath $log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            throw "PAMUNGKAS provider compile failed with exit code $exitCode. See provider-compile.log."
+          }
+
+      - name: Compile Brave browser core integration target
+        shell: pwsh
+        working-directory: src/brave
+        run: |
+          $log = Join-Path $env:GITHUB_WORKSPACE '.pamungkas\evidence\core-integration-compile.log'
+          pnpm run build Component --target brave/browser:core 2>&1 | Tee-Object -FilePath $log
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) {
+            throw "PAMUNGKAS core integration compile failed with exit code $exitCode. See core-integration-compile.log."
+          }
+
+      - name: Write compile evidence
+        if: success()
+        shell: pwsh
+        run: |
+          $evidenceDir = Join-Path $env:GITHUB_WORKSPACE '.pamungkas\evidence'
+          $result = [ordered]@{
+            status = 'TARGETED_INTEGRATION_COMPILE_PASS'
+            generated_at_utc = [DateTime]::UtcNow.ToString('o')
+            configuration = 'Component'
+            targets = @(
+              'brave/browser/os_crypt:portable_key_provider',
+              'brave/browser:core'
+            )
+            branch = 'pamungkas/portable-oscrypt-poc'
+            commit = '${{ github.sha }}'
+            sync_history = 'shallow-plus-64'
+            target_os = 'win'
+            target_arch = 'x64'
+            windows_sdk = '10.0.28000.0'
+          }
+          $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidenceDir 'targeted-compile-result.json') -Encoding UTF8
+
+      - name: Upload targeted compile evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pamungkas-targeted-windows-compile-evidence
+          path: .pamungkas/evidence/*
+          if-no-files-found: warn
+          retention-days: 14

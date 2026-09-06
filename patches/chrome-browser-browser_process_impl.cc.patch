@@ -1,0 +1,11 @@
+diff --git a/chrome/browser/browser_process_impl.cc b/chrome/browser/browser_process_impl.cc
+--- a/chrome/browser/browser_process_impl.cc
++++ b/chrome/browser/browser_process_impl.cc
+@@ -1565,6 +1565,7 @@ void BrowserProcessImpl::PreMainMessageLoopRun() {
+       /*precedence=*/15u,
+       std::make_unique<os_crypt_async::AppBoundEncryptionProviderWin>(
+           local_state(), /*force_protection_level=*/std::nullopt)));
++  BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER
+ #endif  // BUILDFLAG(IS_WIN)
+ 
+ #if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)

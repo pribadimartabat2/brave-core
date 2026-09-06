@@ -1,0 +1,128 @@
+name: pamungkas-portable-oscrypt
+
+on:
+  push:
+    branches:
+      - 'pamungkas/portable-oscrypt-poc'
+  pull_request:
+    paths:
+      - 'browser/BUILD.gn'
+      - 'browser/os_crypt/**'
+      - 'chromium_src/chrome/browser/browser_process_impl.cc'
+      - 'patches/chrome-browser-browser_process_impl.cc.patch'
+      - 'tools/pamungkas/windows-build.ps1'
+      - '.github/workflows/pamungkas-portable-oscrypt.yml'
+      - '.github/workflows/pamungkas-full-windows-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  portable-key-contract:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout focused files
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          sparse-checkout: |
+            browser/BUILD.gn
+            browser/os_crypt
+            chromium_src/chrome/browser/browser_process_impl.cc
+            patches/chrome-browser-browser_process_impl.cc.patch
+            tools/pamungkas/windows-build.ps1
+            .github/workflows/pamungkas-full-windows-build.yml
+            package.json
+          sparse-checkout-cone-mode: false
+
+      - name: Parse governed Windows build harness
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          $harnessPath = Resolve-Path 'tools/pamungkas/windows-build.ps1'
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            $harnessPath,
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw 'windows-build.ps1 contains PowerShell parser errors'
+          }
+
+          $harness = Get-Content $harnessPath -Raw
+          function Assert-Contains([string]$text, [string]$needle, [string]$message) {
+            if (-not $text.Contains($needle)) { throw $message }
+          }
+          Assert-Contains $harness '[switch]$CreateDist' 'CreateDist build gate missing'
+          Assert-Contains $harness 'pnpm run create_dist Release --skip_signing' 'unsigned Brave create_dist command missing'
+          Assert-Contains $harness 'windows-dist-result.json' 'distribution evidence file missing'
+          Assert-Contains $harness 'Get-FileHash -LiteralPath $installerPath -Algorithm SHA256' 'installer SHA-256 evidence missing'
+
+      - name: Verify full-build workflow contract
+        shell: pwsh
+        run: |
+          $workflow = Get-Content '.github/workflows/pamungkas-full-windows-build.yml' -Raw
+          function Assert-Contains([string]$text, [string]$needle, [string]$message) {
+            if (-not $text.Contains($needle)) { throw $message }
+          }
+          Assert-Contains $workflow 'runs-on: [self-hosted, Windows, X64, brave-build]' 'self-hosted full-build runner gate missing'
+          Assert-Contains $workflow "'-CreateDist'" 'full-build workflow does not request CreateDist'
+          Assert-Contains $workflow 'src/out/Release/brave_installer.exe' 'patched installer artifact upload missing'
+          Assert-Contains $workflow 'src/out/Release/dist/*.zip' 'patched distribution ZIP upload missing'
+
+      - name: Compile portable key contract test
+        shell: pwsh
+        run: |
+          $gpp = 'C:\mingw64\bin\g++.exe'
+          if (-not (Test-Path $gpp)) { throw "MinGW g++ not found at $gpp" }
+          & $gpp -std=c++20 -Wall -Wextra -Werror `
+            -I. `
+            browser/os_crypt/portable_key_file_win.cc `
+            browser/os_crypt/portable_key_file_win_test.cc `
+            -lbcrypt `
+            -o portable_key_file_win_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run portable key contract test
+        run: .\portable_key_file_win_test.exe
+
+      - name: Verify Chromium hook patch against Brave pin
+        shell: pwsh
+        run: |
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $chromiumTag = $package.config.projects.chrome.tag
+          $upstream = Join-Path $PWD 'upstream'
+          $browserDir = Join-Path $upstream 'chrome\browser'
+          New-Item -ItemType Directory -Force -Path $browserDir | Out-Null
+          $source = Join-Path $browserDir 'browser_process_impl.cc'
+          $url = "https://raw.githubusercontent.com/chromium/chromium/$chromiumTag/chrome/browser/browser_process_impl.cc"
+          Invoke-WebRequest -Uri $url -OutFile $source
+          Push-Location $upstream
+          git init | Out-Null
+          git add chrome/browser/browser_process_impl.cc
+          git -c user.name=PAMUNGKAS -c user.email=pamungkas@example.invalid commit -m baseline | Out-Null
+          git apply --check ..\patches\chrome-browser-browser_process_impl.cc.patch
+          $exitCode = $LASTEXITCODE
+          Pop-Location
+          if ($exitCode -ne 0) { exit $exitCode }
+
+      - name: Verify portable provider integration contract
+        shell: pwsh
+        run: |
+          $provider = Get-Content browser/os_crypt/brave_portable_key_provider_win.cc -Raw
+          $wrapper = Get-Content chromium_src/chrome/browser/browser_process_impl.cc -Raw
+          $patch = Get-Content patches/chrome-browser-browser_process_impl.cc.patch -Raw
+          $build = Get-Content browser/BUILD.gn -Raw
+
+          function Assert-Contains([string]$text, [string]$needle, [string]$message) {
+            if (-not $text.Contains($needle)) { throw $message }
+          }
+
+          Assert-Contains $provider 'constexpr char kPortableDataPrefix[] = "brp1";' 'portable ciphertext tag brp1 missing'
+          Assert-Contains $provider 'BravePortableAwareDPAPIKeyProvider::UseForEncryption' 'DPAPI decryption-only wrapper missing'
+          Assert-Contains $provider 'BravePortableAwareAppBoundEncryptionProviderWin::UseForEncryption' 'App-Bound decryption-only wrapper missing'
+          Assert-Contains $wrapper '/*precedence=*/20u' 'portable provider precedence 20 missing'
+          Assert-Contains $wrapper 'BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER' 'chromium_src provider hook missing'
+          Assert-Contains $patch 'BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER' 'upstream patch hook missing'
+          Assert-Contains $build '//brave/browser/os_crypt:portable_key_provider' 'Brave core dependency missing'
