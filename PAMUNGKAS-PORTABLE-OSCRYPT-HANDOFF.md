@@ -11,13 +11,13 @@ Repositories:
 Working branch: `pamungkas/portable-oscrypt-poc`
 Draft PR: `pribadimartabat2/brave-core#1`
 
-Do not merge this branch into `master` until full Windows build and real PC A -> PC B -> PC A portability gates pass.
+Do not merge into `master` until the full Windows build and the real PC A -> PC B -> PC A portability gates pass.
 
 ## CURRENT-SNAPSHOT
 
 Baseline Brave Core: `1.97.8`.
 Pinned Chromium: `153.0.8010.28`.
-Current proven core head: `ffb211964006540f9769e866d91589c2e87c30c5`.
+Latest targeted core CI after build/dist contract changes: PASS.
 
 Status: `NO-GO` for release.
 
@@ -46,19 +46,17 @@ Modern Brave/Chromium uses OSCryptAsync. The old synchronous Windows OSCrypt imp
 
 - key: `PBK1` + 32-byte CSPRNG key = 36 bytes;
 - state: `PBS2` + 8-byte fingerprint = 12 bytes;
-- key and state are stored beside the portable profile;
 - `CREATE_NEW` prevents silent race overwrite;
 - file buffers are flushed before success;
 - temporary raw-key buffers are zeroed;
 - malformed existing key is rejected;
-- once initialized, a missing key fails closed instead of silently generating a replacement;
-- same-size PBK1 key mutation/replacement is rejected because PBS2 fingerprint no longer matches;
-- legacy PBS1 presence-only state is upgraded to PBS2 only while the valid key is still available.
+- once initialized, a missing key fails closed;
+- same-size PBK1 mutation/replacement is rejected because the PBS2 fingerprint no longer matches;
+- legacy PBS1 presence-only state can upgrade to PBS2 only while the valid key is present.
 
 ### Legacy providers
 
 In portable mode:
-
 - DPAPI v10 remains available for legacy decryption but not new encryption;
 - App-Bound v20 remains available for legacy decryption but not new encryption;
 - outside portable mode upstream behavior remains unchanged.
@@ -68,75 +66,102 @@ Provider precedence:
 - v20 App-Bound: 15;
 - `brp1`: 20.
 
-Chromium `153.0.8010.28` confirms both legacy provider classes remain subclassable and expose virtual `UseForEncryption()` behavior needed by the wrappers.
+Chromium `153.0.8010.28` confirms the legacy provider classes remain subclassable and expose the virtual `UseForEncryption()` behavior used by the wrappers.
 
 ### Chromium integration
 
-A minimal patch inserts `BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER` after App-Bound. Brave keeps implementation in `chromium_src/chrome/browser/browser_process_impl.cc`; it does not copy Chromium's full `BrowserProcessImpl::PreMainMessageLoopRun()`.
+A minimal patch inserts `BRAVE_BROWSER_PROCESS_IMPL_ADD_PORTABLE_OSCRYPT_PROVIDER` after App-Bound. Brave keeps implementation in `chromium_src/chrome/browser/browser_process_impl.cc`; no copy of Chromium's full `BrowserProcessImpl::PreMainMessageLoopRun()` is maintained.
 
-Build wiring adds Windows-only dependency `//brave/browser/os_crypt:portable_key_provider` from `//brave/browser:core`. Referenced upstream GN targets exist at the pinned Chromium tag.
+Build wiring adds Windows-only dependency `//brave/browser/os_crypt:portable_key_provider` from `//brave/browser:core`.
 
-## WINDOWS BUILD HARNESS
+## WINDOWS BUILD + DIST CONTRACT
 
-`tools/pamungkas/windows-build.ps1` is the governed full-build entry.
+`tools/pamungkas/windows-build.ps1` is the governed build entry.
 
-It checks:
+Preflight requires:
 - layout `<project>\src\brave`;
 - branch `pamungkas/portable-oscrypt-poc`;
 - clean working tree;
 - git/node/pnpm/python;
 - pinned Chromium tag;
-- configurable free-disk floor, default 120 GB.
+- configurable free disk floor, default 120 GB.
 
 Modes:
-- `-CheckOnly`: preflight only;
-- `-Initialize`: allows `pnpm run init`;
-- default full build: `Release`.
+- `-CheckOnly`: evidence/preflight only;
+- `-Initialize`: runs Brave/Chromium initialization;
+- `-CreateDist`: Release-only distribution phase;
+- default build configuration: `Release`.
 
-Evidence is written outside source under `<project>/.pamungkas/evidence/`. Hosted targeted CI is not counted as a full Brave/Chromium build.
+With `-CreateDist`, the harness uses Brave's official `create_dist` target with `--skip_signing`. Brave's own GN signing template explicitly turns signing into a file copy when `skip_signing=true`, allowing an unsigned PoC candidate without Brave signing keys.
+
+Required dist outputs:
+- `src/out/Release/brave_installer.exe`;
+- one or more ZIPs under `src/out/Release/dist/`.
+
+Evidence under `<project>/.pamungkas/evidence/`:
+- `windows-build-preflight.json`;
+- `windows-build-result.json`;
+- `windows-dist-result.json`.
+
+`windows-dist-result.json` records installer/distribution paths, byte sizes, and SHA-256 hashes. Dist PASS is impossible unless installer + ZIP outputs actually exist.
+
+## FULL-BUILD WORKFLOW
+
+`.github/workflows/pamungkas-full-windows-build.yml` is manual-only (`workflow_dispatch`) and deliberately uses:
+
+`[self-hosted, Windows, X64, brave-build]`
+
+A normal hosted runner is not counted as full Chromium/Brave build evidence.
+
+The full workflow:
+1. checks out the branch at canonical `src/brave` layout;
+2. runs governed preflight;
+3. optionally initializes Chromium;
+4. builds patched Brave Release;
+5. runs unsigned `create_dist`;
+6. uploads build/dist evidence;
+7. uploads `brave_installer.exe` + dist ZIP as **candidate artifacts only**.
+
+It does not publish a GitHub Release automatically.
 
 ## EVIDENCE / TESTS
 
 ### Missing-key hardening
-
-- RED: `acd6de95a602aeea8b96bff16e2f6ebf3636007b` — expected state marker absent;
-- GREEN: `fcb5dcd3a580c95235b751bec95f506ac274abd6` — initialized key loss fails closed.
+- RED: `acd6de95a602aeea8b96bff16e2f6ebf3636007b`;
+- GREEN: `fcb5dcd3a580c95235b751bec95f506ac274abd6`.
 
 ### Same-size key replacement hardening
-
-The first mutation helper used a normal stream against a Windows hidden file and did not reliably prove the mutation. That test evidence was rejected rather than counted.
+The first mutation helper was rejected as evidence because a normal stream did not reliably mutate the Windows hidden key file.
 
 Corrected evidence:
-- test helper uses Win32 `CreateFileW`/`WriteFile`, asserts mutated bytes are actually present on disk;
-- RED: `7c94d8150b83a8cd07c00a37657c93ba777ec78e` with presence-only PBS1 state;
-- observed failure: `Assertion failed: !changed.has_value()` at the mutation test;
-- GREEN restored implementation: `ffb211964006540f9769e866d91589c2e87c30c5`;
-- current targeted workflow `pamungkas-portable-oscrypt`: PASS;
-- `Compare Chromium versions`: PASS;
-- label workflow: PASS.
+- Win32 `CreateFileW`/`WriteFile` test helper verifies changed bytes are really on disk;
+- RED: `7c94d8150b83a8cd07c00a37657c93ba777ec78e` with PBS1 presence-only state;
+- expected failure observed at `!changed.has_value()`;
+- PBS2 fingerprint implementation restored and targeted CI PASS.
 
-Current targeted workflow also checks:
+Latest targeted workflow checks:
 - portable helper C++ compile;
-- helper runtime contract;
-- Chromium patch application against pinned `153.0.8010.28`;
-- provider/wrapper/build integration assertions;
-- Windows build harness PowerShell parsing.
+- portable helper runtime contract;
+- PowerShell build harness parser;
+- `CreateDist`/`--skip_signing`/SHA-256 dist contract;
+- full-build workflow artifact contract;
+- Chromium patch applies against pinned `153.0.8010.28`;
+- provider/wrapper/build integration assertions.
 
 ## LAUNCHER INTEGRATION
 
-`pribadimartabat2/brave-portable` branch `pamungkas/portable-session-root-cause` now requires postflight metadata for:
-
+`pribadimartabat2/brave-portable`, branch `pamungkas/portable-session-root-cause`, requires postflight metadata for:
 - `Local State`;
-- regular 36-byte `Portable Encryption Key`;
-- regular 12-byte `Portable Encryption Key.state`.
+- regular 36-byte PBK1 key;
+- regular 12-byte PBS2 state.
 
-Launcher does not read key/fingerprint contents; engine is authority for PBS2 fingerprint validation.
+Launcher does not read key/fingerprint contents; the engine is authority for PBS2 fingerprint validation.
 
-Launcher targeted CI on syntax-fixed commit `1e4259c5f52d08c741a491998ef3244119813148`: PASS.
+The Portapps package build now has a hard anti-stock authority gate. Until the patched engine candidate is published through the governed `pribadimartabat2/brave-core` release path, the Portapps build must fail and the actual packaging job is skipped. This is intentional NO-GO, not a build regression.
 
 ## SECURITY CONTRACT
 
-The portable key intentionally travels with the profile. Therefore possession of unlocked portable media materially increases risk compared with Windows machine-bound protection.
+The portable key intentionally travels with the profile. Possession of unlocked portable media therefore materially increases risk compared with Windows machine-bound protection.
 
 Required production posture:
 - encrypted removable/full-volume storage;
@@ -144,7 +169,7 @@ Required production posture:
 - never expose fingerprint contents in diagnostics;
 - passphrase wrapping may be considered later after basic portability is proven.
 
-PBS2 is an integrity/identity check against accidental key loss/replacement. It is not a substitute for encrypted removable media.
+PBS2 is an identity/integrity check against accidental key loss/replacement. It is not a substitute for encrypted removable media.
 
 ## MIGRATION CONTRACT
 
@@ -153,15 +178,15 @@ Fresh profile:
 
 Existing profile:
 - v10/v20 remain available for decryption where the original Windows context can still unlock them;
-- migration to `brp1` must be proven store-by-store, not assumed;
+- migration to `brp1` must be proven store-by-store;
 - already machine-bound secrets cannot be promised recoverable once the original decrypt-capable context is unavailable.
 
 ## KNOWN-ISSUES
 
-- Full Brave Windows `Release` compile has not yet been proven.
+- Full Brave Windows Release compile has not yet been executed on a 120GB+ capable Windows build environment.
+- Candidate installer/dist artifacts therefore do not exist yet.
 - Real patched-browser runtime has not yet been tested.
 - Real PC A -> PC B -> PC A retention has not yet been proven.
-- Portapps packaging still downloads official stock Brave; final packaging must consume patched binary with an anti-stock gate.
 - Existing-profile store-wide migration remains unproven.
 
 ## RELEASE GATES
@@ -169,23 +194,26 @@ Existing profile:
 Status: `NO-GO`.
 
 Required before merge/release:
-1. current-head targeted CI PASS — core PASS; launcher targeted PASS on latest code-bearing commit;
-2. full Windows `Release` compile PASS;
-3. packaged launcher consumes patched binary, never stock Brave;
-4. fresh profile creates PBK1 + PBS2 and starts normally;
-5. launcher postflight PASS;
-6. Chrome Web Store extension non-regression PASS;
-7. controlled own-account sessions survive PC A -> PC B;
-8. return PC B -> PC A remains valid;
-9. existing-profile migration test on original decrypt-capable PC then PC B;
-10. corrupt/missing/replaced-key behavior is explicit and non-destructive;
-11. no cookie/password/key/fingerprint contents appear in logs or diagnostics;
-12. release artifacts/checksums only after all gates pass.
+1. targeted CI PASS in both repos;
+2. full Windows `Release` build PASS;
+3. `create_dist` PASS with installer + ZIP SHA-256 evidence;
+4. Portapps packaging consumes governed patched installer, never stock Brave;
+5. fresh profile creates PBK1 + PBS2 and starts normally;
+6. launcher postflight PASS;
+7. Chrome Web Store extension non-regression PASS;
+8. controlled own-account sessions survive PC A -> PC B;
+9. return PC B -> PC A remains valid;
+10. existing-profile migration test on original decrypt-capable PC then PC B;
+11. corrupt/missing/replaced-key behavior remains non-destructive;
+12. no cookie/password/key/fingerprint contents appear in logs or diagnostics;
+13. final release artifacts/checksums only after all gates pass.
 
 ## WHAT-NEXT
 
-1. Run `tools/pamungkas/windows-build.ps1 -CheckOnly` on a real Windows build workspace with sufficient disk.
-2. After preflight PASS, initialize Chromium and run first full patched Brave `Release` build.
-3. Rewire `brave-portable` packaging to consume that patched binary with hard anti-stock rejection.
-4. Execute PC A -> PC B -> PC A runtime matrix.
-5. Only after evidence passes, prepare release artifacts and move PRs out of draft.
+1. Attach a suitable Windows self-hosted/cloud build runner labeled `brave-build` with at least 120 GB free.
+2. Run `pamungkas-full-windows-build` with `initialize=true` for the first workspace initialization.
+3. Collect candidate installer/dist + SHA-256 evidence.
+4. Configure `brave-portable` to the candidate patched installer via the governed URL+SHA helper/gate.
+5. Build the first integrated portable candidate.
+6. Execute PC A -> PC B -> PC A runtime matrix.
+7. Only then prepare final release artifacts and move PRs out of draft.
