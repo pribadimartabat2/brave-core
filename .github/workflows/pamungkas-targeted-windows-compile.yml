@@ -90,6 +90,32 @@ jobs:
         working-directory: src/brave
         run: node ./build/commands/scripts/sync.ts --init --no-history --target_os win --target_arch x64
 
+      - name: Deepen Chromium history for valid LASTCHANGE metadata
+        shell: pwsh
+        working-directory: src/brave
+        run: |
+          $chromiumRoot = (Resolve-Path '..').Path
+          $isShallow = (git -C $chromiumRoot rev-parse --is-shallow-repository).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: cannot inspect Chromium repository history."
+          }
+          if ($isShallow -eq 'true') {
+            git -C $chromiumRoot fetch --deepen=64 origin
+            if ($LASTEXITCODE -ne 0) {
+              throw "PAMUNGKAS TARGETED COMPILE NO-GO: failed to deepen Chromium history."
+            }
+          }
+          $positionCommit = @(git -C $chromiumRoot log -n 64 --format='%H' --grep='Cr-Commit-Position:') | Select-Object -First 1
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($positionCommit)) {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: Chromium history still lacks Cr-Commit-Position metadata required by LASTCHANGE."
+          }
+          $commitTimeText = (git -C $chromiumRoot show -s --format='%ct' $positionCommit).Trim()
+          $commitTime = 0L
+          if ($LASTEXITCODE -ne 0 -or -not [Int64]::TryParse($commitTimeText, [ref]$commitTime) -or $commitTime -le 0) {
+            throw "PAMUNGKAS TARGETED COMPILE NO-GO: Chromium LASTCHANGE source commit has an invalid timestamp: $commitTimeText"
+          }
+          Write-Host "Chromium LASTCHANGE metadata gate PASS: commit=$positionCommit timestamp=$commitTime"
+
       - name: Ensure Chromium-required Windows SDK 10.0.28000.0
         shell: pwsh
         run: |
@@ -166,7 +192,7 @@ jobs:
             )
             branch = 'pamungkas/portable-oscrypt-poc'
             commit = '${{ github.sha }}'
-            sync_history = 'shallow'
+            sync_history = 'shallow-plus-64'
             target_os = 'win'
             target_arch = 'x64'
             windows_sdk = '10.0.28000.0'
